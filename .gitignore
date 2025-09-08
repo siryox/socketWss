@@ -1,0 +1,18 @@
+# Directorios de Node
+node_modules/
+dist/
+npm-debug.log
+yarn-error.log
+
+# Archivos de certificados SSL/TLS
+# ¡Estos archivos son privados y no deben ser públicos!
+certs/*
+
+# Archivos de configuración y variables de entorno
+.env
+.DS_Store
+.vscode/
+
+# Logs del servidor
+logs/
+*.log
