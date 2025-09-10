@@ -1,7 +1,7 @@
 // server.js
 const WebSocket = require('ws');
-const TaskScheduler = require('./src/taskScheduler');
 const http = require('http');
+const TaskScheduler = require('../src/taskScheduler');
 
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -10,30 +10,48 @@ const server = http.createServer((req, res) => {
 
 const wsServer = new WebSocket.Server({ server });
 
-// Creamos una instancia única de nuestro planificador de tareas
 const scheduler = new TaskScheduler();
-scheduler.startScheduler(); // Iniciamos el planificador
+// Un mapa para rastrear qué cliente está ejecutando qué tarea
+const clientTasks = new Map(); 
 
 wsServer.on('connection', ws => {
     console.log('Cliente conectado');
 
-    ws.on('message', message => {
+    ws.on('message', async message => {
         try {
-            // Analizamos el mensaje como JSON
             const data = JSON.parse(message);
             console.log('Mensaje recibido:', data);
 
-            // Pasamos la tarea directamente al planificador
-            scheduler.addTask(data, ws);
+            // Pasamos la tarea al scheduler para que la gestione
+            const task = await scheduler.handleTask(data, ws);
+            
+            // Si la tarea se inició, la registramos con la conexión del cliente
+            if (task.status === 'stream_started') {
+                clientTasks.set(ws, task.taskId);
+            } else if (task.status === 'stream_stopped') {
+                clientTasks.delete(ws);
+            }
+
+            ws.send(JSON.stringify(task));
 
         } catch (error) {
-            console.error('Error al analizar el mensaje JSON:', error.message);
-            ws.send(JSON.stringify({ error: 'Formato de mensaje JSON inválido.' }));
+            console.error('Error:', error.message);
+            ws.send(JSON.stringify({ 
+                status: 'error', 
+                message: 'Error en la petición o en el formato JSON.'
+            }));
         }
     });
 
     ws.on('close', () => {
         console.log('Cliente desconectado');
+        // Regla 1: Si un cliente desconecta, eliminamos su tarea 'running'
+        if (clientTasks.has(ws)) {
+            const taskId = clientTasks.get(ws);
+            scheduler.stopTask(taskId);
+            clientTasks.delete(ws);
+            console.log(`Tarea ${taskId} detenida y eliminada por desconexión del cliente.`);
+        }
     });
 
     ws.on('error', error => {
