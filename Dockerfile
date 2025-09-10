@@ -3,7 +3,7 @@
 FROM node:20-alpine
 
 # Establecemos el directorio de trabajo dentro del contenedor
-WORKDIR /usr/src/app
+WORKDIR /opt/socketwss
 
 # Copiamos los archivos de package.json y package-lock.json
 # Esto permite a Docker aprovechar la caché de capas si solo cambian los archivos de código
@@ -19,4 +19,4 @@ COPY . .
 EXPOSE 8080
 
 # Comando para iniciar la aplicación cuando se ejecute el contenedor
-CMD ["npm", "start"]
+CMD ["npm","run","dev"]
