@@ -27,17 +27,20 @@ const wsServer = new WebSocket.Server({
         const origin = info.origin;
         console.log(`📡 Solicitud de conexión recibida desde: ${origin || 'Origen no especificado'}`);
 
-        if (!ENABLE_ORIGIN_VALIDATION) {
+        if (ENABLE_ORIGIN_VALIDATION) {
+            if (ALLOWED_ORIGINS.includes(origin)) {
+                console.log(`✅ Conexión aceptada para el origen: ${origin}`);
+                return done(true);
+            } else {
+                console.log(`🚫 Conexión rechazada: El origen "${origin || 'no especificado'}" no está en la lista de permitidos.`);
+                return done(false, 401, 'Unauthorized Origin');
+            }    
+        }else
+        {
             return done(true); // Validación desactivada, permitir la conexión.
         }
 
-        if (ALLOWED_ORIGINS.includes(origin)) {
-            console.log(`✅ Conexión aceptada para el origen: ${origin}`);
-            return done(true);
-        } else {
-            console.log(`🚫 Conexión rechazada: El origen "${origin || 'no especificado'}" no está en la lista de permitidos.`);
-            return done(false, 401, 'Unauthorized Origin');
-        }
+        
     }
 });
 
