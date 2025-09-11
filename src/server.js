@@ -19,7 +19,7 @@ const server = http.createServer((req, res) => {
     res.end('Servidor WebSocket activo\n');
 });
 
-const wsServer = new WebSocket.Server({ noServer: true });
+
 const scheduler = new TaskScheduler();
 
 // --- Validación de Origen en el Servidor HTTP ---
@@ -35,7 +35,7 @@ server.on('upgrade', (request, socket, head) => {
             return;
         }
     }
-
+    const wsServer = new WebSocket.Server({ noServer: true });
     wsServer.handleUpgrade(request, socket, head, ws => {
         wsServer.emit('connection', ws, request);
     });
