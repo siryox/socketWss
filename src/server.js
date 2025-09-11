@@ -19,15 +19,15 @@ const server = http.createServer((req, res) => {
     res.end('Servidor WebSocket activo\n');
 });
 
-// --- Validación de Origen en la Petición de Actualización ---
+// --- **Validación de Origen en la Petición de Actualización** ---
 server.on('upgrade', (request, socket, head) => {
-    const requestUrl = new URL(request.url, `http://${request.headers.host}`);
     const origin = request.headers.origin;
 
     console.log(`📡 Solicitud de conexión recibida desde: ${origin || 'Origen no especificado'}`);
 
-    if (ENABLE_ORIGIN_VALIDATION && origin && !ALLOWED_ORIGINS.includes(origin)) {
-        console.log(`🚫 Conexión rechazada: El origen "${origin}" no está en la lista de permitidos.`);
+    // La condición de seguridad ahora verifica si el origen no existe O no está permitido.
+    if (ENABLE_ORIGIN_VALIDATION && (!origin || !ALLOWED_ORIGINS.includes(origin))) {
+        console.log(`🚫 Conexión rechazada: El origen "${origin || 'no especificado'}" no está en la lista de permitidos.`);
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
