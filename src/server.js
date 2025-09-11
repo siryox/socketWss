@@ -6,7 +6,8 @@ const TaskScheduler = require('../src/taskScheduler');
 require('dotenv').config();
 
 // --- Configuración de Seguridad ---
-const ENABLE_ORIGIN_VALIDATION = process.env.ENABLE_ORIGIN_VALIDATION === 'true';
+// Ahora la validación se activa si el valor de la variable es 'on' (en minúsculas).
+const ENABLE_ORIGIN_VALIDATION = process.env.ENABLE_ORIGIN_VALIDATION === 'on';
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
 const ALLOWED_APIS = process.env.ALLOWED_APIS ? process.env.ALLOWED_APIS.split(',') : [];
 
@@ -19,10 +20,7 @@ const server = http.createServer((req, res) => {
     res.end('Servidor WebSocket activo\n');
 });
 
-// --- **Validación de Origen Integrada** ---
-// Aquí es donde se establece la validación de origen de forma correcta y robusta.
-// La librería `ws` tiene una opción `verifyClient` que se encarga de la validación
-// de la solicitud de conexión por nosotros, lo que es mucho más seguro.
+// --- Validación de Origen Integrada ---
 const wsServer = new WebSocket.Server({
     server: server,
     verifyClient: (info, done) => {
@@ -33,7 +31,6 @@ const wsServer = new WebSocket.Server({
             return done(true); // Validación desactivada, permitir la conexión.
         }
 
-        // Si la validación está activa, verificamos que el origen sea válido.
         if (ALLOWED_ORIGINS.includes(origin)) {
             console.log(`✅ Conexión aceptada para el origen: ${origin}`);
             return done(true);
