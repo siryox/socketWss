@@ -1,5 +1,5 @@
 // src/TaskScheduler.js
-const fs = require('fs').promises; // Usamos la versión de Promesas para operaciones asíncronas
+const fs = require('fs').promises;
 const path = require('path');
 const https = require('https');
 require('dotenv').config();
@@ -131,25 +131,26 @@ class TaskScheduler {
         const taskId = `${url_api_destino}-${metodo_peticion}`;
 
         // La función que se ejecutará en cada intervalo
-        const execute = async () => {
+        // La conexión 'ws' es ahora un argumento de la función anidada
+        const execute = async (clientWs) => {
             try {
                 // Realiza la petición de forma asíncrona y espera el resultado
                 const apiResponse = await this._makeApiRequest(taskData);
                 
-                // Si la conexión sigue abierta, envía la actualización
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ status: 'update', data: apiResponse }));
+                // Usamos el 'clientWs' que fue pasado de forma explícita
+                if (clientWs.readyState === WebSocket.OPEN) {
+                    clientWs.send(JSON.stringify({ status: 'update', data: apiResponse }));
                 }
             } catch (error) {
                 // Si hay un error, lo envía al cliente y lo registra
-                if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ status: 'error', message: `Error en stream: ${error.message}` }));
+                if (clientWs.readyState === WebSocket.OPEN) {
+                    clientWs.send(JSON.stringify({ status: 'error', message: `Error en stream: ${error.message}` }));
                 }
             }
         };
 
-        // Inicia el intervalo y guarda su ID para poder detenerlo más tarde
-        const intervalId = setInterval(execute, interval);
+        // Inicia el intervalo y pasa el objeto 'ws' como argumento para la función 'execute'
+        const intervalId = setInterval(() => execute(ws), interval);
         // Asociamos el ID del stream con el WebSocket del cliente
         this.runningStreams.set(taskId, { intervalId, ws });
         
