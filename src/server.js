@@ -6,7 +6,6 @@ const TaskScheduler = require('../src/taskScheduler');
 require('dotenv').config();
 
 // --- Configuración de Seguridad ---
-// Ahora la validación se activa si el valor de la variable es 'on' (en minúsculas).
 const ENABLE_ORIGIN_VALIDATION = process.env.ENABLE_ORIGIN_VALIDATION === 'on';
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
 const ALLOWED_APIS = process.env.ALLOWED_APIS ? process.env.ALLOWED_APIS.split(',') : [];
@@ -20,31 +19,27 @@ const server = http.createServer((req, res) => {
     res.end('Servidor WebSocket activo\n');
 });
 
-// --- Validación de Origen Integrada ---
-const wsServer = new WebSocket.Server({
-    server: server,
-    verifyClient: (info, done) => {
-        const origin = info.origin;
-        console.log(`📡 Solicitud de conexión recibida desde: ${origin || 'Origen no especificado'}`);
-
-        if (ENABLE_ORIGIN_VALIDATION) {
-            if (ALLOWED_ORIGINS.includes(origin)) {
-                console.log(`✅ Conexión aceptada para el origen: ${origin}`);
-                return done(true);
-            } else {
-                console.log(`🚫 Conexión rechazada: El origen "${origin || 'no especificado'}" no está en la lista de permitidos.`);
-                return done(false, 401, 'Unauthorized Origin');
-            }    
-        }else
-        {
-            return done(true); // Validación desactivada, permitir la conexión.
-        }
-
-        
-    }
-});
-
+const wsServer = new WebSocket.Server({ noServer: true });
 const scheduler = new TaskScheduler();
+
+// --- Validación de Origen en el Servidor HTTP ---
+server.on('upgrade', (request, socket, head) => {
+    const origin = request.headers.origin;
+    console.log(`📡 Solicitud de conexión recibida desde: ${origin || 'Origen no especificado'}`);
+
+    if (ENABLE_ORIGIN_VALIDATION) {
+        if (!origin || !ALLOWED_ORIGINS.includes(origin)) {
+            console.log(`🚫 Conexión rechazada: El origen "${origin || 'no especificado'}" no está en la lista de permitidos.`);
+            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+            socket.destroy();
+            return;
+        }
+    }
+
+    wsServer.handleUpgrade(request, socket, head, ws => {
+        wsServer.emit('connection', ws, request);
+    });
+});
 
 // --- Manejo de Conexiones WebSocket ---
 wsServer.on('connection', ws => {
