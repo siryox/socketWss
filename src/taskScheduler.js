@@ -3,6 +3,7 @@ const fs = require('fs').promises;
 const path = require('path');
 const https = require('https');
 require('dotenv').config();
+const WebSocket = require('ws'); // <-- This is the new, critical line
 
 const TASKS_FILE = path.join(__dirname, 'tasks.json');
 
