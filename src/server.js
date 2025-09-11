@@ -2,7 +2,7 @@
 const WebSocket = require('ws'); // Módulo principal para el servidor WebSocket
 const http = require('http');     // Módulo para crear el servidor HTTP base
 const url = require('url');       // Módulo para parsear y analizar URLs
-const TaskScheduler = require('./src/TaskScheduler'); // Importamos la clase TaskScheduler
+const TaskScheduler = require('../src/taskScheduler'); // Importamos la clase TaskScheduler
 require('dotenv').config();       // Carga las variables de entorno del archivo .env
 
 // --- Configuración de Seguridad ---
