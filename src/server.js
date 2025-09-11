@@ -19,26 +19,31 @@ const server = http.createServer((req, res) => {
     res.end('Servidor WebSocket activo\n');
 });
 
-// --- **Validación de Origen en la Petición de Actualización** ---
-server.on('upgrade', (request, socket, head) => {
-    const origin = request.headers.origin;
+// --- **Validación de Origen Integrada** ---
+// Aquí es donde se establece la validación de origen de forma correcta y robusta.
+// La librería `ws` tiene una opción `verifyClient` que se encarga de la validación
+// de la solicitud de conexión por nosotros, lo que es mucho más seguro.
+const wsServer = new WebSocket.Server({
+    server: server,
+    verifyClient: (info, done) => {
+        const origin = info.origin;
+        console.log(`📡 Solicitud de conexión recibida desde: ${origin || 'Origen no especificado'}`);
 
-    console.log(`📡 Solicitud de conexión recibida desde: ${origin || 'Origen no especificado'}`);
+        if (!ENABLE_ORIGIN_VALIDATION) {
+            return done(true); // Validación desactivada, permitir la conexión.
+        }
 
-    // La condición de seguridad ahora verifica si el origen no existe O no está permitido.
-    if (ENABLE_ORIGIN_VALIDATION && (!origin || !ALLOWED_ORIGINS.includes(origin))) {
-        console.log(`🚫 Conexión rechazada: El origen "${origin || 'no especificado'}" no está en la lista de permitidos.`);
-        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-        socket.destroy();
-        return;
+        // Si la validación está activa, verificamos que el origen sea válido.
+        if (ALLOWED_ORIGINS.includes(origin)) {
+            console.log(`✅ Conexión aceptada para el origen: ${origin}`);
+            return done(true);
+        } else {
+            console.log(`🚫 Conexión rechazada: El origen "${origin || 'no especificado'}" no está en la lista de permitidos.`);
+            return done(false, 401, 'Unauthorized Origin');
+        }
     }
-
-    wsServer.handleUpgrade(request, socket, head, ws => {
-        wsServer.emit('connection', ws, request);
-    });
 });
 
-const wsServer = new WebSocket.Server({ noServer: true });
 const scheduler = new TaskScheduler();
 
 // --- Manejo de Conexiones WebSocket ---
