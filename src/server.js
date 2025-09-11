@@ -1,76 +1,82 @@
 // server.js
-const WebSocket = require('ws'); // Módulo principal para el servidor WebSocket
-const http = require('http');     // Módulo para crear el servidor HTTP base
-const url = require('url');       // Módulo para parsear y analizar URLs
-const TaskScheduler = require('../src/taskScheduler'); // Importamos la clase TaskScheduler
-require('dotenv').config();       // Carga las variables de entorno del archivo .env
+const WebSocket = require('ws');
+const http = require('http');
+const url = require('url');
+const TaskScheduler = require('../src/taskScheduler');
+require('dotenv').config();
 
 // --- Configuración de Seguridad ---
-// Estas variables controlan las reglas de validación del servidor.
 const ENABLE_ORIGIN_VALIDATION = process.env.ENABLE_ORIGIN_VALIDATION === 'true';
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
 const ALLOWED_APIS = process.env.ALLOWED_APIS ? process.env.ALLOWED_APIS.split(',') : [];
 
 // --- Estructuras de Datos ---
-// 'clientTasks' asocia cada conexión de WebSocket con su tarea activa.
-// Esto es vital para detener un stream si el cliente se desconecta.
 const clientTasks = new Map();
 
 // --- Creación del Servidor ---
-// Creamos un servidor HTTP básico.
-// Este servidor no hace nada más que escuchar peticiones.
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Servidor WebSocket activo\n');
 });
 
-// Vinculamos el servidor WebSocket al servidor HTTP.
-const wsServer = new WebSocket.Server({ server });
-const scheduler = new TaskScheduler(); // Creamos una instancia del TaskScheduler
+// --- Validación de Origen en la Petición de Actualización ---
+server.on('upgrade', (request, socket, head) => {
+    const requestUrl = new URL(request.url, `http://${request.headers.host}`);
+    const origin = request.headers.origin;
+
+    console.log(`📡 Solicitud de conexión recibida desde: ${origin || 'Origen no especificado'}`);
+
+    if (ENABLE_ORIGIN_VALIDATION && origin && !ALLOWED_ORIGINS.includes(origin)) {
+        console.log(`🚫 Conexión rechazada: El origen "${origin}" no está en la lista de permitidos.`);
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
+        return;
+    }
+
+    wsServer.handleUpgrade(request, socket, head, ws => {
+        wsServer.emit('connection', ws, request);
+    });
+});
+
+const wsServer = new WebSocket.Server({ noServer: true });
+const scheduler = new TaskScheduler();
 
 // --- Manejo de Conexiones WebSocket ---
-// 'on connection' se ejecuta cada vez que un cliente se conecta.
 wsServer.on('connection', ws => {
-    console.log('Cliente conectado');
+    console.log('✅ Cliente conectado con éxito.');
 
-    // 'on message' se ejecuta cada vez que el servidor recibe un mensaje.
-    // Aquí es donde se valida y procesa cada petición.
     ws.on('message', async message => {
         try {
             const data = JSON.parse(message);
-            console.log('Mensaje recibido:', data);
+            console.log('📬 Mensaje recibido:', data);
 
-            // --- Regla de Seguridad: Validación de API ---
-            // Analizamos la URL de la petición para extraer el dominio.
+            // Regla de seguridad: Validación de API
             const destinationUrl = url.parse(data.url_api_destino);
             const destinationOrigin = `${destinationUrl.protocol}//${destinationUrl.host}`;
 
-            // Si la validación está activa y el dominio de la API no está permitido,
-            // enviamos un error y no procesamos la tarea.
             if (ENABLE_ORIGIN_VALIDATION && !ALLOWED_APIS.includes(destinationOrigin)) {
+                console.log(`❌ Petición rechazada: La API "${destinationOrigin}" no está permitida.`);
                 ws.send(JSON.stringify({
                     status: 'error',
                     message: `La API ${destinationOrigin} no está en la lista de APIs permitidas.`
                 }));
-                return; // Detenemos el flujo de código para esta petición.
+                return;
             }
 
-            // Delegamos la tarea al TaskScheduler para que la gestione.
             const task = await scheduler.handleTask(data, ws);
             
-            // Si el TaskScheduler inicia un stream, guardamos la referencia
-            // para poder detenerlo si es necesario.
             if (task.status === 'stream_started') {
                 clientTasks.set(ws, task.taskId);
+                console.log(`🟢 Stream iniciado para la tarea: ${task.taskId}`);
             } else if (task.status === 'stream_stopped') {
                 clientTasks.delete(ws);
+                console.log(`⚫ Stream detenido para la tarea: ${task.taskId}`);
             }
 
-            // Enviamos la respuesta del scheduler al cliente.
             ws.send(JSON.stringify(task));
 
         } catch (error) {
-            console.error('Error:', error.message);
+            console.error('❌ Error al procesar el mensaje:', error.message);
             ws.send(JSON.stringify({ 
                 status: 'error', 
                 message: 'Error en la petición o en el formato JSON.'
@@ -78,28 +84,22 @@ wsServer.on('connection', ws => {
         }
     });
 
-    // 'on close' se ejecuta cuando un cliente se desconecta.
     ws.on('close', () => {
-        console.log('Cliente desconectado');
-        // Si el cliente tenía una tarea continua activa, la detenemos
-        // para evitar que se ejecute indefinidamente (tarea "zombie").
+        console.log('🔌 Cliente desconectado.');
         if (clientTasks.has(ws)) {
             const taskId = clientTasks.get(ws);
             scheduler.stopTask(taskId);
             clientTasks.delete(ws);
-            console.log(`Tarea ${taskId} detenida y eliminada por desconexión del cliente.`);
+            console.log(`🔴 Tarea ${taskId} detenida y eliminada por desconexión del cliente.`);
         }
     });
 
-    // 'on error' maneja cualquier error de la conexión WebSocket.
     ws.on('error', error => {
-        console.error('Error en la conexión WebSocket:', error);
+        console.error('⚠️ Error en la conexión WebSocket:', error);
     });
 });
 
-// --- Inicio del Servidor ---
-// El servidor comienza a escuchar en el puerto especificado en el archivo .env.
 const PORT = process.env.PORT || 8443;
 server.listen(PORT, () => {
-    console.log(`Servidor WebSocket escuchando en el puerto ${PORT}`);
+    console.log(`🚀 Servidor WebSocket escuchando en el puerto ${PORT}.`);
 });
