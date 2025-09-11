@@ -1,18 +1,36 @@
 // src/TaskScheduler.js
-const fs = require('fs').promises;
+const fs = require('fs').promises; // Usamos la versión de Promesas para operaciones asíncronas
 const path = require('path');
 const https = require('https');
 require('dotenv').config();
 
 const TASKS_FILE = path.join(__dirname, 'tasks.json');
 
+/**
+ * TaskScheduler
+ *
+ * El cerebro de la aplicación. Se encarga de gestionar todas las tareas,
+ * ya sean de ejecución única o de flujos de datos continuos.
+ * Mantiene un registro de las tareas para asegurar que no haya duplicados
+ * y para manejar su estado de forma correcta.
+ */
 class TaskScheduler {
     constructor() {
+        // 'tasks' guarda un historial de todas las tareas (ejecutadas o no)
         this.tasks = [];
         this.loadTasks();
-        this.runningStreams = new Map(); // Para gestionar las tareas continuas
+
+        // 'runningStreams' solo guarda las tareas continuas que están activas.
+        // Usa un 'Map' para un acceso rápido y eficiente.
+        this.runningStreams = new Map();
     }
 
+    // --- Métodos de Gestión de Archivos ---
+
+    /**
+     * Carga el historial de tareas desde el archivo 'tasks.json'.
+     * Si el archivo no existe o hay un error, inicializa una lista vacía.
+     */
     async loadTasks() {
         try {
             const data = await fs.readFile(TASKS_FILE, 'utf8');
@@ -24,6 +42,10 @@ class TaskScheduler {
         }
     }
 
+    /**
+     * Guarda el estado actual de las tareas en el archivo 'tasks.json'.
+     * Esto asegura que el historial persista incluso si el servidor se reinicia.
+     */
     async saveTasks() {
         try {
             const data = JSON.stringify(this.tasks, null, 2);
@@ -34,32 +56,52 @@ class TaskScheduler {
         }
     }
 
+    // --- Lógica Principal de Tareas ---
+
+    /**
+     * Punto de entrada para todas las peticiones del cliente.
+     * Decide si una tarea es de una sola ejecución o un flujo de datos continuo.
+     * @param {object} taskData - Datos de la tarea enviados por el cliente.
+     * @param {object} ws - La instancia del WebSocket del cliente.
+     */
     async handleTask(taskData, ws) {
-        const { url_api_destino, metodo_peticion, continuo, interval } = taskData;
+        const { url_api_destino, metodo_peticion, continuo } = taskData;
         const taskId = `${url_api_destino}-${metodo_peticion}`;
 
         if (continuo) {
+            // Si la tarea es continua, revisamos si ya hay un stream activo
             if (this.runningStreams.has(taskId)) {
                 return { status: 'info', message: 'El stream para esta tarea ya está activo.' };
             }
-            const result = await this._startContinuousTask(taskData, ws);
-            return result;
+            // Si no existe, iniciamos uno nuevo
+            return await this._startContinuousTask(taskData, ws);
         } else {
-            const result = await this._executeAndSaveTask(taskData);
-            return result;
+            // Si la tarea es de una sola ejecución, la procesamos inmediatamente
+            return await this._executeAndSaveTask(taskData);
         }
     }
 
+    // --- Métodos Internos de Ejecución ---
+
+    /**
+     * Procesa una tarea de ejecución única.
+     * - Crea un ID único basado en el tiempo.
+     * - Realiza la petición a la API.
+     * - Actualiza el estado de la tarea (completada o con error).
+     * - Guarda el historial completo de tareas en el archivo.
+     * @param {object} taskData - Datos de la tarea.
+     */
     async _executeAndSaveTask(taskData) {
         const taskId = `${taskData.url_api_destino}-${taskData.metodo_peticion}-${Date.now()}`;
         
-        const newTask = {};
-        newTask.id = taskId;
-        newTask.fecha_creacion = new Date().toISOString();
-        newTask.url_api_destino = taskData.url_api_destino;
-        newTask.metodo_peticion = taskData.metodo_peticion;
-        newTask.body_peticion = taskData.body_peticion || null;
-        newTask.estado = 'pendiente';
+        const newTask = {
+            id: taskId,
+            fecha_creacion: new Date().toISOString(),
+            url_api_destino: taskData.url_api_destino,
+            metodo_peticion: taskData.metodo_peticion,
+            body_peticion: taskData.body_peticion || null,
+            estado: 'pendiente'
+        };
 
         this.tasks.push(newTask);
 
@@ -77,45 +119,68 @@ class TaskScheduler {
         }
     }
 
+    /**
+     * Inicia un flujo de datos continuo.
+     * - Crea un 'setInterval' para ejecutar la petición repetidamente.
+     * - Almacena el ID del intervalo y la conexión del cliente para su gestión.
+     * @param {object} taskData - Datos de la tarea.
+     * @param {object} ws - La instancia del WebSocket del cliente.
+     */
     async _startContinuousTask(taskData, ws) {
-        const taskId = `${taskData.url_api_destino}-${taskData.metodo_peticion}`;
-        const { url_api_destino, metodo_peticion, body_peticion, interval } = taskData;
+        const { url_api_destino, metodo_peticion, interval } = taskData;
+        const taskId = `${url_api_destino}-${metodo_peticion}`;
 
-        const stream = {
-            ws: ws,
-            intervalId: null
-        };
-
+        // La función que se ejecutará en cada intervalo
         const execute = async () => {
             try {
+                // Realiza la petición de forma asíncrona y espera el resultado
                 const apiResponse = await this._makeApiRequest(taskData);
-                if (stream.ws.readyState === WebSocket.OPEN) {
-                    stream.ws.send(JSON.stringify({ status: 'update', data: apiResponse }));
+                
+                // Si la conexión sigue abierta, envía la actualización
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ status: 'update', data: apiResponse }));
                 }
             } catch (error) {
-                if (stream.ws.readyState === WebSocket.OPEN) {
-                    stream.ws.send(JSON.stringify({ status: 'error', message: `Error en stream: ${error.message}` }));
+                // Si hay un error, lo envía al cliente y lo registra
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ status: 'error', message: `Error en stream: ${error.message}` }));
                 }
             }
         };
 
-        stream.intervalId = setInterval(execute, interval);
-        this.runningStreams.set(taskId, stream);
+        // Inicia el intervalo y guarda su ID para poder detenerlo más tarde
+        const intervalId = setInterval(execute, interval);
+        // Asociamos el ID del stream con el WebSocket del cliente
+        this.runningStreams.set(taskId, { intervalId, ws });
         
         return { status: 'stream_started', taskId: taskId, message: `Iniciando stream a ${url_api_destino} cada ${interval}ms.` };
     }
 
+    /**
+     * Detiene una tarea de flujo de datos continua.
+     * - Es llamada por 'server.js' cuando el cliente se desconecta o solicita detener el stream.
+     * - Limpia el 'setInterval' para evitar que el bucle se ejecute indefinidamente.
+     * - Elimina la tarea de la lista de streams activos.
+     * @param {string} taskId - El ID del stream a detener.
+     */
     stopTask(taskId) {
         if (this.runningStreams.has(taskId)) {
-            const stream = this.runningStreams.get(taskId);
-            clearInterval(stream.intervalId);
-            this.runningStreams.delete(taskId);
+            const { intervalId } = this.runningStreams.get(taskId);
+            clearInterval(intervalId); // Detiene el bucle
+            this.runningStreams.delete(taskId); // Elimina la referencia
             console.log(`Stream ${taskId} detenido y eliminado.`);
             return { status: 'stream_stopped', message: `Stream ${taskId} detenido.` };
         }
         return { status: 'stream_not_found', message: 'No hay stream activo para detener.' };
     }
 
+    // --- Utilidades ---
+
+    /**
+     * Realiza una petición HTTPS a la API de destino.
+     * - Retorna una Promesa para poder ser usada con 'async/await'.
+     * @param {object} task - El objeto de la tarea con los datos de la petición.
+     */
     _makeApiRequest(task) {
         return new Promise((resolve, reject) => {
             const { url_api_destino, metodo_peticion, body_peticion } = task;
