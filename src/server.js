@@ -20,22 +20,32 @@ const server = http.createServer((req, res) => {
 });
 
 
+
+const wsServer = new WebSocket.Server({ noServer: true });
 const scheduler = new TaskScheduler();
 
 // --- Validación de Origen en el Servidor HTTP ---
 server.on('upgrade', (request, socket, head) => {
     const origin = request.headers.origin;
-    console.log(`📡 Solicitud de conexión recibida desde: ${origin || 'Origen no especificado'}`);
+
+    console.log(`📡 Solicitud de conexión recibida.`);
+    console.log(`   - Origen de la petición: ${origin || 'NO ESPECIFICADO'}`);
+    console.log(`   - Validación de origen activada: ${ENABLE_ORIGIN_VALIDATION}`);
+    console.log(`   - Orígenes permitidos: [${ALLOWED_ORIGINS.join(', ')}]`);
 
     if (ENABLE_ORIGIN_VALIDATION) {
+        // Validación estricta: si la cabecera no existe o no está en la lista de permitidos, rechazar.
         if (!origin || !ALLOWED_ORIGINS.includes(origin)) {
-            console.log(`🚫 Conexión rechazada: El origen "${origin || 'no especificado'}" no está en la lista de permitidos.`);
+            console.log(`🚫 Conexión RECHAZADA: El origen "${origin || 'no especificado'}" no está autorizado.`);
             socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
             socket.destroy();
             return;
         }
+        console.log(`✅ Origen "${origin}" validado. Procediendo con la conexión.`);
+    } else {
+        console.log(`⚠️ Validación de origen desactivada. Conexión aceptada sin verificación.`);
     }
-    const wsServer = new WebSocket.Server({ noServer: true });
+
     wsServer.handleUpgrade(request, socket, head, ws => {
         wsServer.emit('connection', ws, request);
     });
