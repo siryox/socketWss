@@ -1,115 +1,104 @@
 // server.js
 const WebSocket = require('ws');
-const http = require('http');
-const url = require('url');
-const TaskScheduler = require('../src/taskScheduler');
+const https = require('https'); // Usar 'https' en lugar de 'http'
+const fs = require('fs'); // Módulo para leer archivos
+const Logger = require('../src/logger');
+const TaskScheduler = require('../src/TaskScheduler');
 require('dotenv').config();
 
 // --- Configuración de Seguridad ---
-const ENABLE_ORIGIN_VALIDATION = process.env.ENABLE_ORIGIN_VALIDATION === 'on';
+const ENABLE_ORIGIN_VALIDATION = process.env.ENABLE_ORIGIN_VALIDATION === 'true';
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
-const ALLOWED_APIS = process.env.ALLOWED_APIS ? process.env.ALLOWED_APIS.split(',') : [];
+const MAX_CONNECTIONS_PER_IP = parseInt(process.env.MAX_CONNECTIONS_PER_IP) || 5;
+
+// --- Cargar los Certificados SSL ---
+const options = {
+  key: fs.readFileSync(process.env.SSL_KEY_PATH),
+  cert: fs.readFileSync(process.env.SSL_CERT_PATH)
+};
 
 // --- Estructuras de Datos ---
-const clientTasks = new Map();
+const clientConnections = new Map();
+const clientsByIp = new Map();
 
 // --- Creación del Servidor ---
-const server = http.createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Servidor WebSocket activo\n');
-});
-
-
-
-const wsServer = new WebSocket.Server({ noServer: true });
 const scheduler = new TaskScheduler();
-
-// --- Validación de Origen en el Servidor HTTP ---
-server.on('upgrade', (request, socket, head) => {
-    const origin = request.headers.origin;
-
-    console.log(`📡 Solicitud de conexión recibida.`);
-    console.log(`   - Origen de la petición: ${origin || 'NO ESPECIFICADO'}`);
-    console.log(`   - Validación de origen activada: ${ENABLE_ORIGIN_VALIDATION}`);
-    console.log(`   - Orígenes permitidos: [${ALLOWED_ORIGINS.join(', ')}]`);
-
-    if (ENABLE_ORIGIN_VALIDATION) {
-        // Validación estricta: si la cabecera no existe o no está en la lista de permitidos, rechazar.
-        if (!origin || !ALLOWED_ORIGINS.includes(origin)) {
-            console.log(`🚫 Conexión RECHAZADA: El origen "${origin || 'no especificado'}" no está autorizado.`);
-            socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-            socket.destroy();
-            return;
-        }
-        console.log(`✅ Origen "${origin}" validado. Procediendo con la conexión.`);
+const server = https.createServer(options, (req, res) => { // Usar 'https.createServer'
+    // Manejador de Webhook
+    if (req.method === 'POST' && req.url === '/webhook') {
+        // ... (resto del código del webhook sin cambios) ...
+        let body = '';
+        req.on('data', chunk => {
+            body += chunk.toString();
+        });
+        req.on('end', () => {
+            try {
+                const eventData = JSON.parse(body);
+                scheduler.handleWebhook(eventData);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ status: 'success', message: 'Webhook recibido y procesado' }));
+            } catch (error) {
+                Logger.error('Error al procesar el Webhook. JSON inválido.', { error: error.message });
+                res.writeHead(400);
+                res.end('Error: Datos JSON no válidos.');
+            }
+        });
     } else {
-        console.log(`⚠️ Validación de origen desactivada. Conexión aceptada sin verificación.`);
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Servidor WebSocket y Webhook activo.\n');
     }
-
-    wsServer.handleUpgrade(request, socket, head, ws => {
-        wsServer.emit('connection', ws, request);
-    });
 });
+
+const wsServer = new WebSocket.Server({ server }); // Pasar el servidor HTTPS al WebSocket.Server
 
 // --- Manejo de Conexiones WebSocket ---
-wsServer.on('connection', ws => {
-    console.log('✅ Cliente conectado con éxito.');
+wsServer.on('connection', (ws, request) => {
+    // ... (resto del código de manejo de conexiones sin cambios) ...
+    const clientIp = request.socket.remoteAddress;
+
+    const currentConnections = clientConnections.get(clientIp) || 0;
+    clientConnections.set(clientIp, currentConnections + 1);
+
+    if (!clientsByIp.has(clientIp)) {
+        clientsByIp.set(clientIp, new Set());
+    }
+    clientsByIp.get(clientIp).add(ws);
+
+    Logger.info(`Cliente conectado con éxito. Conexiones activas para ${clientIp}: ${currentConnections + 1}`);
 
     ws.on('message', async message => {
-        try {
-            const data = JSON.parse(message);
-            console.log('📬 Mensaje recibido:', data);
-
-            // Regla de seguridad: Validación de API
-            const destinationUrl = url.parse(data.url_api_destino);
-            const destinationOrigin = `${destinationUrl.protocol}//${destinationUrl.host}`;
-
-            if (ENABLE_ORIGIN_VALIDATION && !ALLOWED_APIS.includes(destinationOrigin)) {
-                console.log(`❌ Petición rechazada: La API "${destinationOrigin}" no está permitida.`);
-                ws.send(JSON.stringify({
-                    status: 'error',
-                    message: `La API ${destinationOrigin} no está en la lista de APIs permitidas.`
-                }));
-                return;
-            }
-
-            const task = await scheduler.handleTask(data, ws);
-            
-            if (task.status === 'stream_started') {
-                clientTasks.set(ws, task.taskId);
-                console.log(`🟢 Stream iniciado para la tarea: ${task.taskId}`);
-            } else if (task.status === 'stream_stopped') {
-                clientTasks.delete(ws);
-                console.log(`⚫ Stream detenido para la tarea: ${task.taskId}`);
-            }
-
-            ws.send(JSON.stringify(task));
-
-        } catch (error) {
-            console.error('❌ Error al procesar el mensaje:', error.message);
-            ws.send(JSON.stringify({ 
-                status: 'error', 
-                message: 'Error en la petición o en el formato JSON.'
-            }));
-        }
+        scheduler.handleClientMessage(ws, message);
     });
 
     ws.on('close', () => {
-        console.log('🔌 Cliente desconectado.');
-        if (clientTasks.has(ws)) {
-            const taskId = clientTasks.get(ws);
-            scheduler.stopTask(taskId);
-            clientTasks.delete(ws);
-            console.log(`🔴 Tarea ${taskId} detenida y eliminada por desconexión del cliente.`);
+        Logger.info('Cliente desconectado.', { ip: clientIp });
+
+        const currentConnections = clientConnections.get(clientIp);
+        if (currentConnections > 1) {
+            clientConnections.set(clientIp, currentConnections - 1);
+        } else {
+            clientConnections.delete(clientIp);
         }
+
+        const clients = clientsByIp.get(clientIp);
+        if (clients) {
+            clients.delete(ws);
+            if (clients.size === 0) {
+                clientsByIp.delete(clientIp);
+            }
+        }
+
+        scheduler.cleanUp(ws);
+        Logger.info(`Conexiones activas para ${clientIp}: ${clientConnections.get(clientIp) || 0}`);
     });
 
     ws.on('error', error => {
-        console.error('⚠️ Error en la conexión WebSocket:', error);
+        Logger.error('Error en la conexión WebSocket.', { error: error.message });
     });
 });
 
+// Arrancar el servidor
 const PORT = process.env.PORT || 8443;
 server.listen(PORT, () => {
-    console.log(`🚀 Servidor WebSocket escuchando en el puerto ${PORT}.`);
+    Logger.info(`Servidor WebSocket seguro (WSS) escuchando en el puerto ${PORT}.`);
 });
