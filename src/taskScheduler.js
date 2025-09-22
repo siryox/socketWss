@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const axios = require('axios');
 
-const TASKS_FILE = path.resolve(__dirname, '../src/tasks.json');
+const TASKS_FILE = path.resolve(__dirname, 'tasks.json');
 const POLL_INTERVAL = 5000; // Sondeo cada 5 segundos
 const API_TIMEOUT = 5000; // 5 segundos de timeout para la API
 
