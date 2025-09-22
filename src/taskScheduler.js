@@ -10,30 +10,44 @@ const API_TIMEOUT = 5000; // 5 segundos de timeout para la API
 
 class TaskScheduler {
     constructor() {
-        this.tasks = new Map(); // Mapa de tareas por client_id
-        this.clientToTaskMap = new Map(); // Mapa de cliente WebSocket a task_id
-        this.clientSubscriptions = new Map(); // Mapa de suscripciones por cliente
+        this.tasks = new Map();
+        this.clientToTaskMap = new Map();
+        this.clientSubscriptions = new Map();
         this.init();
     }
 
     init() {
-        // Inicializa el sondeo para enviar respuestas pendientes
+        this.loadTasksFromFile();
         setInterval(() => this.pollAndSendTasks(), POLL_INTERVAL);
         Logger.info('TaskScheduler inicializado y proceso de sondeo activado.');
     }
 
-    /**
-     * @description Maneja los mensajes entrantes de los clientes WebSocket.
-     * @param {WebSocket} ws Cliente WebSocket.
-     * @param {string} message Mensaje recibido en formato JSON.
-     */
+    loadTasksFromFile() {
+        try {
+            if (fs.existsSync(TASKS_FILE)) {
+                const tasksArray = JSON.parse(fs.readFileSync(TASKS_FILE, 'utf8'));
+                tasksArray.forEach(task => {
+                    this.tasks.set(task.client, task);
+                });
+                Logger.info(`✅ Se cargaron ${this.tasks.size} tareas desde tasks.json.`);
+            } else {
+                Logger.info('tasks.json no encontrado. Se iniciará un nuevo archivo.');
+                this.saveTask();
+            }
+        } catch (error) {
+            Logger.error('❌ Error al cargar las tareas desde tasks.json.', { error: error.message });
+        }
+    }
+
     async handleClientMessage(ws, message) {
         try {
             const data = JSON.parse(message);
             const { service, token, api_url, operation } = data;
+            const client_id = this.getClientId(ws);
+
+            Logger.info(`📩 Mensaje recibido de ${client_id}. Operación: ${operation}.`);
 
             if (operation === 'subscribe') {
-                const client_id = this.getClientId(ws);
                 if (!client_id) {
                     this.sendErrorToClient(ws, 'No se pudo identificar al cliente.');
                     return;
@@ -41,50 +55,49 @@ class TaskScheduler {
 
                 if (this.clientSubscriptions.get(client_id)?.has(api_url)) {
                     this.sendMessageToClient(ws, { status: 'info', message: 'Ya estás suscrito a este servicio.' });
+                    Logger.warn(`⚠️ Intento de suscripción duplicada para ${client_id} en la URL ${api_url}.`);
                     return;
                 }
 
-                // 1. Crear la tarea y guardarla
+                Logger.info(`➡️  Iniciando suscripción de ${client_id} al servicio "${service}" en ${api_url}.`);
+
                 const task = this.createTask(client_id, api_url, service, token);
                 this.saveTask(task);
+                this.clientToTaskMap.set(ws, client_id);
 
-                // 2. Enviar la petición de suscripción a la API REST
                 const subscribeResponse = await this.subscribeToApi(api_url, client_id, service, token);
 
                 if (subscribeResponse.success) {
-                    // Actualizar la tarea y el mapa de suscripciones
                     task.status = 'POR RECIBIR';
                     task.last_update = new Date().toISOString();
                     this.saveTask(task);
                     this.addClientSubscription(client_id, api_url);
 
                     this.sendMessageToClient(ws, { status: 'success', message: 'Suscripción exitosa. Esperando datos...' });
+                    Logger.info(`✅ Suscripción exitosa para ${client_id}.`);
                 } else {
-                    // Si la suscripción falla, eliminar la tarea
                     this.deleteTask(task.client);
                     this.sendErrorToClient(ws, `Error al suscribirse a la API: ${subscribeResponse.message}`);
+                    Logger.error(`❌ Falló la suscripción a la API para ${client_id}. Detalles: ${subscribeResponse.message}`);
                 }
-
             } else {
                 this.sendErrorToClient(ws, 'Operación no válida. Use "subscribe".');
+                Logger.warn(`⚠️ Operación no reconocida desde ${client_id}. Operación solicitada: ${operation}.`);
             }
         } catch (error) {
-            Logger.error('Error al procesar el mensaje del cliente.', { error: error.message });
+            Logger.error('❌ Error al procesar el mensaje del cliente. Formato JSON inválido.', { error: error.message });
             this.sendErrorToClient(ws, 'Error en el formato del mensaje JSON.');
         }
     }
 
-    /**
-     * @description Maneja los eventos entrantes del webhook de la API REST.
-     * @param {object} eventData Datos del evento del webhook.
-     */
     handleWebhook(eventData) {
-        const { client_id, response, operation, data } = eventData;
+        const { suscription, operation, data } = eventData;
+        const client_id = suscription; // La API REST debe enviar un ID de suscripción/cliente para identificar la tarea
+        Logger.info(`📥 Webhook recibido para cliente ${client_id}. Operación: ${operation}.`);
 
-        // Buscar la tarea por el client_id
         const task = this.tasks.get(client_id);
         if (!task) {
-            Logger.warn(`Webhook recibido para un cliente no registrado: ${client_id}`);
+            Logger.warn(`⚠️ Webhook recibido para un cliente no registrado: ${client_id}.`);
             return;
         }
 
@@ -92,10 +105,10 @@ class TaskScheduler {
             task.last_result = data;
             task.status = 'POR ENVIAR';
             task.last_update = new Date().toISOString();
-            Logger.info(`Tarea de cliente ${client_id} actualizada a POR ENVIAR.`);
             this.saveTask(task);
+            Logger.info(`📦 Tarea de cliente ${client_id} actualizada. Ahora en estado "POR ENVIAR".`);
         } else if (operation === 'delete') {
-            Logger.warn(`API solicita eliminar la tarea y desconectar al cliente ${client_id}.`);
+            Logger.warn(`⚠️ API solicita la eliminación de la tarea y desconexión de ${client_id}.`);
             const ws = this.getWsClientFromTask(task);
             if (ws) {
                 this.sendMessageToClient(ws, { status: 'disconnected', message: 'Su sesión ha expirado o ha sido terminada por la API.' });
@@ -106,67 +119,52 @@ class TaskScheduler {
             task.status = 'PAUSADO';
             task.last_update = new Date().toISOString();
             this.saveTask(task);
-            Logger.info(`Tarea de cliente ${client_id} pausada.`);
+            Logger.info(`⏸️ Tarea de cliente ${client_id} pausada.`);
         }
     }
 
-    /**
-     * @description Proceso de sondeo que busca y envía las tareas con estado 'POR ENVIAR'.
-     */
     pollAndSendTasks() {
-        Logger.info('Iniciando sondeo de tareas...');
+        Logger.info('🔍 Iniciando sondeo de tareas pendientes...');
         this.tasks.forEach(task => {
             if (task.status === 'POR ENVIAR') {
                 const ws = this.getWsClientFromTask(task);
                 if (ws && ws.readyState === WebSocket.OPEN) {
                     this.sendMessageToClient(ws, { status: 'data', service: task.service, data: task.last_result });
-                    // Actualizar el estado de la tarea a 'POR RECIBIR'
                     task.status = 'POR RECIBIR';
                     task.last_update = new Date().toISOString();
                     this.saveTask(task);
-                    Logger.info(`Respuesta enviada al cliente ${task.client}. Tarea actualizada a POR RECIBIR.`);
+                    Logger.info(`🚀 Respuesta enviada al cliente ${task.client}. Tarea actualizada a "POR RECIBIR".`);
                 } else {
-                    Logger.warn(`Cliente ${task.client} no está conectado o listo. La tarea se mantiene en POR ENVIAR.`);
+                    Logger.warn(`⚠️ Cliente ${task.client} no está conectado. La tarea se mantiene en "POR ENVIAR".`);
                 }
             }
         });
     }
 
-    /**
-     * @description Limpia las tareas y suscripciones cuando un cliente se desconecta.
-     * @param {WebSocket} ws Cliente WebSocket.
-     */
     cleanUp(ws) {
-        const client_id = this.getClientId(ws);
+        const client_id = this.clientToTaskMap.get(ws);
         if (!client_id) return;
 
-        // Desuscribir de la API y eliminar la tarea del archivo
         const task = this.tasks.get(client_id);
         if (task) {
             this.unsubscribeFromApi(task.api_url, client_id);
             this.deleteTask(client_id);
         }
         
-        // Limpiar el mapa de suscripciones del cliente
         this.clientSubscriptions.delete(client_id);
-        Logger.info(`Limpieza de suscripciones y tareas completada para el cliente ${client_id}.`);
+        this.clientToTaskMap.delete(ws);
+        Logger.info(`🧹 Limpieza de suscripciones y tareas completada para el cliente ${client_id}.`);
     }
 
     // --- Métodos de Gestión de Tareas ---
 
     getClientId(ws) {
-        // En un entorno de producción, un ID más robusto sería necesario.
-        // Aquí se usa un hash simple de la dirección y el puerto.
-        if (ws._socket) {
-            return `${ws._socket.remoteAddress}:${ws._socket.remotePort}`;
-        }
-        return null;
+        return `${ws._socket.remoteAddress}:${ws._socket.remotePort}`;
     }
 
     getWsClientFromTask(task) {
-        const client_id = task.client;
-        for (const [ws, task_id] of this.clientToTaskMap.entries()) {
-            if (task_id === client_id) {
+        for (const [ws, taskId] of this.clientToTaskMap.entries()) {
+            if (taskId === task.client) {
                 return ws;
             }
         }
@@ -187,7 +185,7 @@ class TaskScheduler {
         return task;
     }
 
-    saveTask(task) {
+    saveTask() {
         const tasksArray = Array.from(this.tasks.values());
         fs.writeFileSync(TASKS_FILE, JSON.stringify(tasksArray, null, 2), 'utf8');
     }
@@ -202,39 +200,37 @@ class TaskScheduler {
             this.clientSubscriptions.set(client_id, new Set());
         }
         this.clientSubscriptions.get(client_id).add(api_url);
-        // También se puede usar clientToTaskMap aquí para mapear el WebSocket al ID de la tarea
     }
 
     // --- Métodos de Comunicación con API ---
 
     async subscribeToApi(api_url, client_id, service, token) {
-        const subscriptionUrl = `${api_url}/subscribe`; // URL de suscripción en la API
+        const subscriptionUrl = `${api_url}/subscribe`;
         try {
             const response = await axios.post(subscriptionUrl, {
                 service,
                 client_id,
                 token,
-                webhook_url: `${process.env.SERVER_URL || 'http://localhost:8443'}/webhook`
+                webhook_url: `${process.env.SERVER_URL}/webhook`
             }, { timeout: API_TIMEOUT });
             return { success: true, message: response.data.message };
         } catch (error) {
-            Logger.error(`Error al suscribir a la API ${api_url}`, { error: error.message });
+            Logger.error(`❌ Error al suscribir a la API ${api_url}`, { error: error.message });
             return { success: false, message: 'Fallo la conexión o la suscripción en la API.' };
         }
     }
 
     async unsubscribeFromApi(api_url, client_id) {
-        const unsubscribeUrl = `${api_url}/unsubscribe`; // URL de desuscripción en la API
+        const unsubscribeUrl = `${api_url}/unsubscribe`;
         try {
             await axios.post(unsubscribeUrl, { client_id }, { timeout: API_TIMEOUT });
             Logger.info(`Petición de desuscripción enviada para el cliente ${client_id} a ${api_url}.`);
         } catch (error) {
-            Logger.error(`Error al desuscribir de la API ${api_url}`, { error: error.message });
+            Logger.error(`❌ Error al desuscribir de la API ${api_url}`, { error: error.message });
         }
     }
 
     // --- Métodos de Comunicación con Clientes ---
-
     sendMessageToClient(ws, message) {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(message));
