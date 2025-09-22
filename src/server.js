@@ -3,7 +3,7 @@ const WebSocket = require('ws');
 const https = require('https'); // Usar 'https' en lugar de 'http'
 const fs = require('fs'); // Módulo para leer archivos
 const Logger = require('../src/logger');
-const TaskScheduler = require('../src/TaskScheduler');
+const TaskScheduler = require('../src/taskScheduler');
 require('dotenv').config();
 
 // --- Configuración de Seguridad ---
