@@ -123,6 +123,9 @@ class TaskScheduler {
         }
     }
 
+   /**
+     * @description Proceso de sondeo que busca y envía las tareas con estado 'POR ENVIAR'.
+     */
     pollAndSendTasks() {
         Logger.info('🔍 Iniciando sondeo de tareas pendientes...');
         this.tasks.forEach(task => {
@@ -136,11 +139,19 @@ class TaskScheduler {
                     Logger.info(`🚀 Respuesta enviada al cliente ${task.client}. Tarea actualizada a "POR RECIBIR".`);
                 } else {
                     Logger.warn(`⚠️ Cliente ${task.client} no está conectado. La tarea se mantiene en "POR ENVIAR".`);
+                    // Aquí está la mejora: si el cliente no está conectado, limpiamos la tarea.
+                    if (ws) {
+                         this.cleanUp(ws);
+                         Logger.info(`🧹 Tarea y suscripción del cliente ${task.client} eliminada debido a una conexión perdida.`);
+                    }
                 }
             }
         });
     }
 
+   /**
+     * @description Limpia las tareas y suscripciones cuando un cliente se desconecta.
+     */
     cleanUp(ws) {
         const client_id = this.clientToTaskMap.get(ws);
         if (!client_id) return;
@@ -234,12 +245,18 @@ class TaskScheduler {
     sendMessageToClient(ws, message) {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify(message));
+        } else {
+            Logger.warn(`⚠️ Intento de envío a un WebSocket cerrado. Limpiando la tarea...`);
+            this.cleanUp(ws); // Si el socket está cerrado, se limpia.
         }
     }
 
     sendErrorToClient(ws, errorMessage) {
         if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ status: 'error', message: errorMessage }));
+        } else {
+            Logger.warn(`⚠️ Intento de envío de error a un WebSocket cerrado. Limpiando la tarea...`);
+            this.cleanUp(ws); // Si el socket está cerrado, se limpia.
         }
     }
 }
